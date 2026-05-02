@@ -473,7 +473,7 @@ function ZoteroReader() {
         
         const response = await fetch(`${baseApiUrl}/items?${queryParams.toString()}`, { headers });
         if (!response.ok) {
-          if (response.status === 412) { // Precondition failed - library changed significantly?
+          if (response.status === 412) { 
             console.warn('Sync 412: Version mismatch, forcing full sync');
             return fetchData(false); 
           }
@@ -486,7 +486,7 @@ function ZoteroReader() {
         if (start === 0) {
           const totalHeader = response.headers.get('total-results') || response.headers.get('Total-Results');
           if (totalHeader) {
-            total = Math.min(parseInt(totalHeader, 10), 10000);
+            total = Math.min(parseInt(totalHeader, 10), 25000); // Increased limit slightly
             setLoadStats(prev => ({ ...prev, total }));
           }
           if (batchVersion) setLibraryVersion(batchVersion);
@@ -498,97 +498,96 @@ function ZoteroReader() {
           
           totalFetchedItems = [...totalFetchedItems, ...batchData];
           
-          // Incremental processing
-          const parents = batchData.filter(i => !i.data.parentItem && !['attachment', 'note'].includes(i.data.itemType));
-          const children = batchData.filter(i => i.data.parentItem);
-
-          // We'll process everything in setItems to have access to previous state for incremental updates
-          if (isIncremental) {
-            setItems(prev => {
-              const newMap = new Map<string, ZoteroItem>(prev.map(i => [i.key, i]));
-              
-              // First, handle all items in batch that might be children updating parents
-              children.forEach(child => {
-                const parentKey = child.data.parentItem;
-                const existingParent = newMap.get(parentKey);
-                if (existingParent && (child.data.contentType === 'application/pdf' || child.data.filename?.toLowerCase().endsWith('.pdf'))) {
-                  // Clone to ensure React detects change
-                  newMap.set(parentKey, {
-                    ...existingParent,
-                    meta: {
-                      ...existingParent.meta,
-                      attachmentKey: child.key
-                    }
-                  });
-                }
-              });
-
-              // Then update parent items themselves
-              parents.forEach(p => {
-                const existing = newMap.get(p.key);
-                const attachments = children.filter(c => c.data.parentItem === p.key && c.data.itemType === 'attachment');
-                const pdf = attachments.find(a => a.data.contentType === 'application/pdf') || attachments[0];
-                
-                const collections = (p.data.collections || []).map((id: string) => collNameMap[id] || id);
-
-                newMap.set(p.key, {
-                  ...p,
-                  meta: {
-                    ...p.meta,
-                    creatorSummary: p.meta.creatorSummary || existing?.meta.creatorSummary || 'Unknown Creator',
-                    // Use new PDF if found, else preserve old one
-                    attachmentKey: pdf?.key || existing?.meta.attachmentKey || '',
-                    // Preserve annotation count if not explicitly recalculated
-                    annotationCount: existing?.meta.annotationCount || p.meta.numChildren || 0,
-                    collections: collections.length > 0 ? collections : (existing?.meta.collections || [])
-                  }
-                });
-              });
-              
-              return Array.from(newMap.values());
-            });
-          } else {
-            // Full Sync Logic
-            const processed = parents.map(p => {
-              const attachments = children.filter(c => c.data.parentItem === p.key && c.data.itemType === 'attachment');
-              const pdf = attachments.find(a => a.data.contentType === 'application/pdf') || attachments[0];
-              
-              let knowledgeTotal = p.meta.numChildren || 0;
-              attachments.forEach(a => {
-                knowledgeTotal += (a.meta.numChildren || 0);
-              });
-              knowledgeTotal = Math.max(0, knowledgeTotal - attachments.length);
-
-              return {
-                ...p,
-                meta: {
-                  ...p.meta,
-                  attachmentKey: pdf?.key || '',
-                  annotationCount: knowledgeTotal,
-                  collections: (p.data.collections || []).map((id: string) => collNameMap[id] || id)
-                }
-              };
-            });
-
-            if (start === 0) {
-              setItems(processed);
-            } else {
-              setItems(prev => [...prev, ...processed]);
-            }
-          }
-
           setLoadStats(prev => ({ 
             current: totalFetchedItems.length, 
             total: hasMore ? Math.max(total, totalFetchedItems.length + 1) : totalFetchedItems.length 
           }));
-          setLastSyncTime(new Date());
         } else {
           break;
         }
 
         start += limit;
-        if (start > 10000) break;
       }
+
+      // 3. Post-Process Fetched Items
+      if (isIncremental) {
+        setItems(prev => {
+          const allItemsMap = new Map<string, any>(prev.map(i => [i.key, i]));
+          // Temporary map to store all items (including attachments) for relationship lookups
+          const lookupMap = new Map<string, any>();
+          // First, add all existing items to lookup
+          prev.forEach(item => lookupMap.set(item.key, item));
+          // Then add all new items from batch
+          totalFetchedItems.forEach(item => lookupMap.set(item.key, item));
+
+          // Filter out parents in the new batch or parents of children in the new batch
+          const affectedParentKeys = new Set<string>();
+          totalFetchedItems.forEach(item => {
+            if (!item.data.parentItem && !['attachment', 'note'].includes(item.data.itemType)) {
+              affectedParentKeys.add(item.key);
+            } else if (item.data.parentItem) {
+              affectedParentKeys.add(item.data.parentItem);
+            }
+          });
+
+          // Re-process affected parents
+          affectedParentKeys.forEach(pKey => {
+            const p = lookupMap.get(pKey);
+            if (!p || p.data.parentItem || ['attachment', 'note'].includes(p.data.itemType)) return;
+
+            const allLibraryItems = Array.from(lookupMap.values());
+            const children = allLibraryItems.filter(c => c.data.parentItem === p.key);
+            const attachments = children.filter(c => c.data.itemType === 'attachment');
+            const pdf = attachments.find(a => a.data.contentType === 'application/pdf') || attachments[0];
+            
+            const notesCount = children.filter(c => c.data.itemType === 'note').length;
+            const pdfAnnotationsCount = attachments
+              .filter(a => a.data.contentType === 'application/pdf')
+              .reduce((acc, a) => acc + (a.meta.numChildren || 0), 0);
+
+            const collections = (p.data.collections || []).map((id: string) => collNameMap[id] || id);
+
+            allItemsMap.set(p.key, {
+              ...p,
+              meta: {
+                ...p.meta,
+                attachmentKey: pdf?.key || '',
+                annotationCount: notesCount + pdfAnnotationsCount,
+                collections: collections.length > 0 ? collections : (p.meta.collections || [])
+              }
+            });
+          });
+
+          return Array.from(allItemsMap.values());
+        });
+      } else {
+        // Full Sync Post-Process
+        const parents = totalFetchedItems.filter(i => !i.data.parentItem && !['attachment', 'note'].includes(i.data.itemType));
+        
+        const processed = parents.map(p => {
+          const children = totalFetchedItems.filter(c => c.data.parentItem === p.key);
+          const attachments = children.filter(c => c.data.itemType === 'attachment');
+          const pdf = attachments.find(a => a.data.contentType === 'application/pdf') || attachments[0];
+          
+          const notesCount = children.filter(c => c.data.itemType === 'note').length;
+          const pdfAnnotationsCount = attachments
+            .filter(a => a.data.contentType === 'application/pdf')
+            .reduce((acc, a) => acc + (a.meta.numChildren || 0), 0);
+
+          return {
+            ...p,
+            meta: {
+              ...p.meta,
+              attachmentKey: pdf?.key || '',
+              annotationCount: notesCount + pdfAnnotationsCount,
+              collections: (p.data.collections || []).map((id: string) => collNameMap[id] || id)
+            }
+          };
+        });
+
+        setItems(processed);
+      }
+      setLastSyncTime(new Date());
     } catch (error) {
       console.error('Failed to fetch data', error);
       setSyncError(error instanceof Error ? error.message : 'Sync Failed');
