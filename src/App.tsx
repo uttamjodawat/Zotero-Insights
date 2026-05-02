@@ -80,21 +80,28 @@ function ZoteroReader() {
     return saved ? JSON.parse(saved) : null;
   });
   const [items, setItems] = useState<ZoteroItem[]>([]);
+  const [hasAttemptedRestore, setHasAttemptedRestore] = useState(false);
   
   // Initial load from IDB
   useEffect(() => {
     const initData = async () => {
-      const savedItems = await getFromIDB();
-      if (savedItems && savedItems.length > 0) {
-        setItems(savedItems);
-      } else {
-        // Fallback to localStorage if tiny
-        const legacyItems = localStorage.getItem('zotero_items');
-        if (legacyItems) {
-          try {
-            setItems(JSON.parse(legacyItems));
-          } catch (e) { console.error(e); }
+      try {
+        const savedItems = await getFromIDB();
+        if (savedItems && savedItems.length > 0) {
+          setItems(savedItems);
+        } else {
+          // Fallback to localStorage if tiny
+          const legacyItems = localStorage.getItem('zotero_items');
+          if (legacyItems) {
+            try {
+              setItems(JSON.parse(legacyItems));
+            } catch (e) { console.error(e); }
+          }
         }
+      } catch (e) {
+        console.error('IDB Init Error:', e);
+      } finally {
+        setHasAttemptedRestore(true);
       }
     };
     initData();
@@ -368,12 +375,12 @@ function ZoteroReader() {
   };
 
   useEffect(() => {
-    if (auth && !isLocalSession) {
+    if (auth && !isLocalSession && hasAttemptedRestore) {
       // On mount: if items are present, do a silent check. If items are missing, do full fetch.
       // On login: items is cleared by the handler, so it triggers a full fetch.
       fetchData(items.length > 0);
     }
-  }, [auth]);
+  }, [auth, hasAttemptedRestore]);
 
   const fetchData = async (silent = false) => {
     if (!auth) return;
@@ -411,6 +418,8 @@ function ZoteroReader() {
       setLoadStats({ current: 0, total: 100 }); // Default estimate
     }
     
+    const isIncremental = silent && items.length > 0 && libraryVersion !== '0';
+    
     try {
       const userID = auth.userID;
       const libraryType = (auth as any).libraryType === 'group' || (auth as any).libraryType === 'groups' ? 'groups' : 'users';
@@ -418,33 +427,39 @@ function ZoteroReader() {
       
       const headers: any = { 'Zotero-API-Version': '3' };
 
-      // 1. Fetch Collections
-      const collParams = new URLSearchParams({ limit: '100' });
-      if (auth.apiKey) collParams.append('key', auth.apiKey);
-      
-      const collRes = await fetch(`${baseApiUrl}/collections?${collParams.toString()}`, { headers });
-      if (!collRes.ok) throw new Error(`Collections error: ${collRes.status}`);
-      const collectionsData = await collRes.json();
-      
-      const latestVersion = collRes.headers.get('last-modified-version') || collRes.headers.get('Last-Modified-Version');
-      if (latestVersion) {
-        setLibraryVersion(latestVersion);
+      // 1. Fetch Collections (Always refresh if not silent)
+      if (!silent) {
+        const collParams = new URLSearchParams({ limit: '100' });
+        if (auth.apiKey) collParams.append('key', auth.apiKey);
+        
+        const collRes = await fetch(`${baseApiUrl}/collections?${collParams.toString()}`, { headers });
+        if (collRes.ok) {
+          const collectionsData = await collRes.json();
+          const latestVersion = collRes.headers.get('last-modified-version') || collRes.headers.get('Last-Modified-Version');
+          if (latestVersion) {
+            setLibraryVersion(latestVersion);
+          }
+          if (Array.isArray(collectionsData)) {
+            setCollections(collectionsData);
+          }
+        }
       }
 
       const collNameMap: Record<string, string> = {};
-      if (Array.isArray(collectionsData)) {
-        setCollections(collectionsData);
-        collectionsData.forEach((c: any) => {
-          collNameMap[c.key] = c.data.name;
-        });
-      }
+      collections.forEach((c: any) => {
+        collNameMap[c.key] = c.data.name;
+      });
 
-      // 2. Fetch All Items
+      // 2. Fetch Items
       let start = 0;
       const limit = 100;
-      let total = 999999; // Assume large until we get a real count or a small batch
-      let rawItems: any[] = [];
+      let total = 999999; 
+      let totalFetchedItems: any[] = [];
       let hasMore = true;
+
+      if (isIncremental) {
+        console.log('Starting incremental sync since version:', libraryVersion);
+      }
 
       while (hasMore && start < total) {
         const queryParams = new URLSearchParams({
@@ -453,11 +468,19 @@ function ZoteroReader() {
           format: 'json'
         });
         if (auth.apiKey) queryParams.append('key', auth.apiKey);
+        if (isIncremental) queryParams.append('since', libraryVersion);
         
         const response = await fetch(`${baseApiUrl}/items?${queryParams.toString()}`, { headers });
-        if (!response.ok) throw new Error(`Items error: ${response.status}`);
+        if (!response.ok) {
+          if (response.status === 412) { // Precondition failed - library changed significantly?
+            console.warn('Sync 412: Version mismatch, forcing full sync');
+            return fetchData(false); 
+          }
+          throw new Error(`Items error: ${response.status}`);
+        }
         
         const batchData = await response.json();
+        const batchVersion = response.headers.get('last-modified-version') || response.headers.get('Last-Modified-Version');
         
         if (start === 0) {
           const totalHeader = response.headers.get('total-results') || response.headers.get('Total-Results');
@@ -465,20 +488,18 @@ function ZoteroReader() {
             total = Math.min(parseInt(totalHeader, 10), 10000);
             setLoadStats(prev => ({ ...prev, total }));
           }
-          
-          const itemsVersion = response.headers.get('last-modified-version') || response.headers.get('Last-Modified-Version');
-          if (itemsVersion) setLibraryVersion(itemsVersion);
+          if (batchVersion) setLibraryVersion(batchVersion);
         }
 
         if (Array.isArray(batchData)) {
           if (batchData.length < limit) hasMore = false;
           if (batchData.length === 0) break;
           
-          rawItems = [...rawItems, ...batchData];
+          totalFetchedItems = [...totalFetchedItems, ...batchData];
           
           // Incremental processing
-          const parents = rawItems.filter(i => !i.data.parentItem && !['attachment', 'note'].includes(i.data.itemType));
-          const children = rawItems.filter(i => i.data.parentItem);
+          const parents = batchData.filter(i => !i.data.parentItem && !['attachment', 'note'].includes(i.data.itemType));
+          const children = batchData.filter(i => i.data.parentItem);
 
           const processed = parents.map(p => {
             const attachments = children.filter(c => c.data.parentItem === p.key && c.data.itemType === 'attachment');
@@ -502,10 +523,27 @@ function ZoteroReader() {
             };
           });
 
-          setItems(processed);
+          if (isIncremental) {
+            setItems(prev => {
+              const newMap = new Map(prev.map(i => [i.key, i]));
+              processed.forEach(newItem => {
+                newMap.set(newItem.key, newItem);
+              });
+              return Array.from(newMap.values());
+            });
+          } else {
+            // During full sync, we replace items batch by batch initially to show progress, 
+            // but we need to accumulate them in local rawItems equivalent
+            if (start === 0) {
+              setItems(processed);
+            } else {
+              setItems(prev => [...prev, ...processed]);
+            }
+          }
+
           setLoadStats(prev => ({ 
-            current: rawItems.length, 
-            total: hasMore ? Math.max(total, rawItems.length + 1) : rawItems.length 
+            current: totalFetchedItems.length, 
+            total: hasMore ? Math.max(total, totalFetchedItems.length + 1) : totalFetchedItems.length 
           }));
           setLastSyncTime(new Date());
         } else {
@@ -595,9 +633,12 @@ function ZoteroReader() {
       const month = dateAdded.toLocaleString('default', { month: 'short' });
       monthlyStats[month] = (monthlyStats[month] || 0) + 1;
 
-      // Habit data indexing
-      const dateMod = (item.data.dateModified || '').split(/[ T]/)[0];
-      if (dateMod) habitGroup[dateMod] = (habitGroup[dateMod] || 0) + 1;
+      // Habit data indexing - use local date to match user's perspective
+      if (item.data.dateModified) {
+        const d = new Date(item.data.dateModified);
+        const localDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        habitGroup[localDate] = (habitGroup[localDate] || 0) + 1;
+      }
     });
 
     const typeData = Object.entries(typeCounts).map(([name, value]) => ({ name, value }));
@@ -608,13 +649,12 @@ function ZoteroReader() {
     const rangeLength = timeRange === 'weekly' ? 7 : timeRange === 'monthly' ? 30 : 90;
     
     const habitDays = Array.from({ length: rangeLength }, (_, i) => {
-      // Use UTC consistently to avoid "tile shows 3 but data of 2nd" issue
       const d = new Date();
-      d.setUTCHours(0, 0, 0, 0);
-      d.setUTCDate(d.getUTCDate() - (rangeLength - 1 - i));
+      d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() - (rangeLength - 1 - i));
       
-      const dayStr = d.toISOString().split('T')[0];
-      return { date: dayStr, count: habitGroup[dayStr] || 0, display: d.getUTCDate() };
+      const localDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      return { date: localDate, count: habitGroup[localDate] || 0, display: d.getDate() };
     });
 
     const currentStreak = habitDays.reduceRight((acc, day) => {
