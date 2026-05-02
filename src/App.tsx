@@ -155,7 +155,7 @@ function ZoteroReader() {
            JOIN fields f ON f.fieldID = id.fieldID 
            WHERE id.itemID IN (SELECT itemID FROM itemAttachments WHERE parentItemID = i.itemID) 
            AND f.fieldName IN ('numPages', 'pages') LIMIT 1) as totalPages,
-          (SELECT GROUP_CONCAT(c.name, '||') FROM collections c JOIN collectionItems ci ON c.collectionID = ci.collectionID WHERE ci.itemID = i.itemID) as collectionList
+          (SELECT GROUP_CONCAT(c.collectionName, '||') FROM collections c JOIN collectionItems ci ON c.collectionID = ci.collectionID WHERE ci.itemID = i.itemID) as collectionList
         FROM items i
         INNER JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
         WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
@@ -302,16 +302,15 @@ function ZoteroReader() {
     if (silent && libraryVersion !== '0') {
       try {
         const userID = auth.userID;
-        const libraryType = (auth as any).libraryType === 'group' ? 'groups' : 
-                          (auth as any).libraryType || (auth.username?.includes('Group') ? 'groups' : 'users');
+        const libraryType = (auth as any).libraryType === 'group' || (auth as any).libraryType === 'groups' ? 'groups' : 'users';
         const baseUrl = `https://api.zotero.org/${libraryType}/${userID}/items`;
         
-        const params = new URLSearchParams({ limit: '1' });
-        const headers: any = { 'Zotero-API-Version': '3' };
+        const params = new URLSearchParams({ 
+          limit: '1'
+        });
+        if (auth.apiKey) params.append('key', auth.apiKey);
         
-        if (auth.apiKey) {
-          headers['Zotero-API-Key'] = auth.apiKey;
-        }
+        const headers: any = { 'Zotero-API-Version': '3' };
 
         const checkRes = await fetch(`${baseUrl}?${params.toString()}`, { headers });
         const currentVersion = checkRes.headers.get('last-modified-version') || checkRes.headers.get('Last-Modified-Version');
@@ -334,17 +333,16 @@ function ZoteroReader() {
     
     try {
       const userID = auth.userID;
-      const libraryType = (auth as any).libraryType === 'group' ? 'groups' : 
-                        (auth as any).libraryType || (auth.username?.includes('Group') ? 'groups' : 'users');
+      const libraryType = (auth as any).libraryType === 'group' || (auth as any).libraryType === 'groups' ? 'groups' : 'users';
       const baseApiUrl = `https://api.zotero.org/${libraryType}/${userID}`;
       
       const headers: any = { 'Zotero-API-Version': '3' };
-      if (auth.apiKey) {
-        headers['Zotero-API-Key'] = auth.apiKey;
-      }
 
       // 1. Fetch Collections
-      const collRes = await fetch(`${baseApiUrl}/collections?limit=100`, { headers });
+      const collParams = new URLSearchParams({ limit: '100' });
+      if (auth.apiKey) collParams.append('key', auth.apiKey);
+      
+      const collRes = await fetch(`${baseApiUrl}/collections?${collParams.toString()}`, { headers });
       if (!collRes.ok) throw new Error(`Collections error: ${collRes.status}`);
       const collectionsData = await collRes.json();
       
@@ -374,6 +372,7 @@ function ZoteroReader() {
           limit: limit.toString(),
           format: 'json'
         });
+        if (auth.apiKey) queryParams.append('key', auth.apiKey);
         
         const response = await fetch(`${baseApiUrl}/items?${queryParams.toString()}`, { headers });
         if (!response.ok) throw new Error(`Items error: ${response.status}`);
@@ -458,7 +457,7 @@ function ZoteroReader() {
       apiKey: directKeyData.apiKey,
       token: 'apikey',
       secret: 'apikey',
-      libraryType: directKeyData.libraryType
+      libraryType: directKeyData.libraryType === 'user' ? 'users' : 'groups'
     } as any;
 
     setAuth(payload);
@@ -1081,7 +1080,7 @@ function ZoteroReader() {
                           </div>
                         </motion.div>
                       ) : (
-                        <div className="mt-8 h-[250px] w-full">
+                        <div className="mt-8 min-h-[250px] h-[250px] w-full">
                           <ResponsiveContainer width="100%" height="100%">
                             <AreaChart data={metrics.monthlyData}>
                               <defs>
