@@ -11,6 +11,60 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { ZoteroItem, ZoteroCollection, AuthPayload } from './types';
 
+// IndexedDB Helper
+const IDB_NAME = 'ZoteroInsightDB';
+const IDB_STORE = 'items';
+
+const saveToIDB = async (items: any[]) => {
+  return new Promise((resolve) => {
+    try {
+      const request = indexedDB.open(IDB_NAME, 1);
+      request.onupgradeneeded = (e: any) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      request.onsuccess = (e: any) => {
+        const db = e.target.result;
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        const store = tx.objectStore(IDB_STORE);
+        store.put(items, 'current_items');
+        tx.oncomplete = () => resolve(true);
+      };
+      request.onerror = () => resolve(false);
+    } catch (e) {
+      console.error('IDB Save Fail', e);
+      resolve(false);
+    }
+  });
+};
+
+const getFromIDB = async (): Promise<any[]> => {
+  return new Promise((resolve) => {
+    try {
+      const request = indexedDB.open(IDB_NAME, 1);
+      request.onupgradeneeded = (e: any) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      request.onsuccess = (e: any) => {
+        const db = e.target.result;
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const store = tx.objectStore(IDB_STORE);
+        const getReq = store.get('current_items');
+        getReq.onsuccess = () => resolve(getReq.result || []);
+        getReq.onerror = () => resolve([]);
+      };
+      request.onerror = () => resolve([]);
+    } catch (e) {
+      resolve([]);
+    }
+  });
+};
+
 // High Density theme colors
 const COLORS = ['#2563eb', '#10b981', '#f59e0b', '#3b82f6', '#64748b'];
 
@@ -25,10 +79,27 @@ function ZoteroReader() {
     const saved = localStorage.getItem('zotero_auth');
     return saved ? JSON.parse(saved) : null;
   });
-  const [items, setItems] = useState<ZoteroItem[]>(() => {
-    const saved = localStorage.getItem('zotero_items');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [items, setItems] = useState<ZoteroItem[]>([]);
+  
+  // Initial load from IDB
+  useEffect(() => {
+    const initData = async () => {
+      const savedItems = await getFromIDB();
+      if (savedItems && savedItems.length > 0) {
+        setItems(savedItems);
+      } else {
+        // Fallback to localStorage if tiny
+        const legacyItems = localStorage.getItem('zotero_items');
+        if (legacyItems) {
+          try {
+            setItems(JSON.parse(legacyItems));
+          } catch (e) { console.error(e); }
+        }
+      }
+    };
+    initData();
+  }, []);
+
   const [collections, setCollections] = useState<ZoteroCollection[]>(() => {
     const saved = localStorage.getItem('zotero_collections');
     return saved ? JSON.parse(saved) : [];
@@ -73,32 +144,28 @@ function ZoteroReader() {
         localStorage.removeItem('zotero_auth');
       }
       
-      if (items.length > 0) {
-        const itemsStr = JSON.stringify(items);
-        if (itemsStr.length < 4.5 * 1024 * 1024) {
-          localStorage.setItem('zotero_items', itemsStr);
-          if (libraryVersion) {
-            localStorage.setItem('zotero_library_version', libraryVersion);
-          }
-        } else {
-          console.warn('Dataset too large for localStorage persistence, clearing version to force refresh on next load.');
-          localStorage.removeItem('zotero_items');
-          localStorage.removeItem('zotero_library_version');
-        }
-      } else {
-        localStorage.setItem('zotero_items', '[]');
-        localStorage.removeItem('zotero_library_version');
-      }
-
+      localStorage.setItem('zotero_session_type', isLocalSession ? 'local' : 'cloud');
+      localStorage.setItem('zotero_live_sync', String(isLiveSync));
+      
       if (collections.length > 0) {
         localStorage.setItem('zotero_collections', JSON.stringify(collections));
       } else {
         localStorage.setItem('zotero_collections', '[]');
       }
-      localStorage.setItem('zotero_session_type', isLocalSession ? 'local' : 'cloud');
-      localStorage.setItem('zotero_live_sync', String(isLiveSync));
+      
+      if (libraryVersion) {
+        localStorage.setItem('zotero_library_version', libraryVersion);
+      }
+
+      if (items.length > 0) {
+        saveToIDB(items);
+        // Clear legacy huge localStorage if it exists
+        if (localStorage.getItem('zotero_items')) {
+          localStorage.removeItem('zotero_items');
+        }
+      }
     } catch (e) {
-      console.error('LocalStorage quota exceeded or blocked:', e);
+      console.error('Persistence error:', e);
     }
   }, [auth, items, collections, isLocalSession, isLiveSync, libraryVersion]);
 
@@ -1010,7 +1077,7 @@ function ZoteroReader() {
                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     <MetricCard label="Reading Depth" value={items.reduce((acc, i) => acc + (i.meta.annotationCount || 0), 0)} subLabel="Total Annotations" />
                     <MetricCard label="Reading Rate" value={`${metrics.itemsPerWeek}/wk`} subLabel="Consumption Rate" status="up" />
-                    <MetricCard label="Knowledge Density" value={(items.reduce((acc, i) => acc + (i.meta.annotationCount || 0), 0) / Math.max(1, metrics.total)).toFixed(1)} subLabel="Notes per Library Item" />
+                    <MetricCard label="Reading Density" value={(items.reduce((acc, i) => acc + (i.meta.annotationCount || 0), 0) / Math.max(1, metrics.total)).toFixed(1)} subLabel="Notes per Library Item" />
                     <MetricCard label="Coverage" value={`${Math.round((items.filter(i => (i.meta.collections || []).length > 0).length / Math.max(1, metrics.total)) * 100)}%`} subLabel="Organized Items" />
                  </div>
 
@@ -1022,7 +1089,7 @@ function ZoteroReader() {
                           <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-1 italic">Reading Progress Map</h3>
                           <div className="flex items-center gap-4">
                              <p className="text-[11px] text-slate-400 font-bold uppercase tracking-tight">
-                               {selectedDate ? `Selected date: ${selectedDate}` : 'Log of research activity'}
+                               {selectedDate ? `Selected date: ${selectedDate}` : 'History of reading progress'}
                              </p>
                              <div className="flex bg-slate-50 rounded-xl p-0.5 border border-slate-100">
                                {['7D', '30D', '90D'].map((r, i) => {
@@ -1042,7 +1109,7 @@ function ZoteroReader() {
                         </div>
                         <div className="flex items-center gap-1.5">
                           <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></div>
-                          <span className="text-[10px] font-black text-slate-800 uppercase tracking-widest">Active System</span>
+                          <span className="text-[10px] font-black text-slate-800 uppercase tracking-widest">Library Pulse</span>
                         </div>
                       </div>
                       
@@ -1067,10 +1134,10 @@ function ZoteroReader() {
                               }`}
                             >
                               <span className="text-[10px] font-black">{day.display}</span>
-                              {day.count > 0 && <span className="text-[8px] font-medium opacity-70 uppercase tracking-tighter">{day.count} OPS</span>}
+                              {day.count > 0 && <span className="text-[8px] font-medium opacity-70 uppercase tracking-tighter">{day.count} READS</span>}
                               
                               <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[8px] font-bold px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-xl">
-                                {day.date} • {day.count} Items
+                                {day.date} • {day.count} Reading Items
                               </div>
                             </button>
                           );
