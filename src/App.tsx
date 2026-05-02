@@ -33,9 +33,9 @@ function ZoteroReader() {
     const saved = localStorage.getItem('zotero_collections');
     return saved ? JSON.parse(saved) : [];
   });
-  const [isLocalSession, setIsLocalSession] = useState(() => {
-    return localStorage.getItem('zotero_session_type') === 'local' || items.length > 0;
-  });
+  const isLocalSession = useMemo(() => {
+    return auth?.token === 'local';
+  }, [auth]);
   const [isLoading, setIsLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -67,24 +67,38 @@ function ZoteroReader() {
   // Persistence Hook
   useEffect(() => {
     try {
-      if (auth) localStorage.setItem('zotero_auth', JSON.stringify(auth));
+      if (auth) {
+        localStorage.setItem('zotero_auth', JSON.stringify(auth));
+      } else {
+        localStorage.removeItem('zotero_auth');
+      }
+      
       if (items.length > 0) {
         const itemsStr = JSON.stringify(items);
-        // localStorage limit is usually ~5MB. If it's too large, we skip persistence
-        if (itemsStr.length < 4 * 1024 * 1024) {
+        if (itemsStr.length < 4.5 * 1024 * 1024) {
           localStorage.setItem('zotero_items', itemsStr);
+          if (libraryVersion) {
+            localStorage.setItem('zotero_library_version', libraryVersion);
+          }
         } else {
-          console.warn('Dataset too large for localStorage persistence, skipping cache.');
+          console.warn('Dataset too large for localStorage persistence, clearing version to force refresh on next load.');
+          localStorage.removeItem('zotero_items');
+          localStorage.removeItem('zotero_library_version');
         }
+      } else {
+        localStorage.setItem('zotero_items', '[]');
+        localStorage.removeItem('zotero_library_version');
       }
-      if (collections.length > 0) localStorage.setItem('zotero_collections', JSON.stringify(collections));
+
+      if (collections.length > 0) {
+        localStorage.setItem('zotero_collections', JSON.stringify(collections));
+      } else {
+        localStorage.setItem('zotero_collections', '[]');
+      }
       localStorage.setItem('zotero_session_type', isLocalSession ? 'local' : 'cloud');
       localStorage.setItem('zotero_live_sync', String(isLiveSync));
     } catch (e) {
       console.error('LocalStorage quota exceeded or blocked:', e);
-    }
-    if (libraryVersion) {
-      localStorage.setItem('zotero_library_version', libraryVersion);
     }
   }, [auth, items, collections, isLocalSession, isLiveSync, libraryVersion]);
 
@@ -226,7 +240,6 @@ function ZoteroReader() {
 
       setItems(importedItems);
       setCollections(importedCollections);
-      setIsLocalSession(true);
       setAuth({
         username: 'Local Database User',
         userID: 'local_sqlite',
@@ -258,7 +271,6 @@ function ZoteroReader() {
         
         setItems(importedItems);
         setCollections([]); 
-        setIsLocalSession(true);
         setAuth({
           username: 'Local Researcher',
           userID: 'local',
@@ -285,13 +297,14 @@ function ZoteroReader() {
     setAuth(null);
     setItems([]);
     setCollections([]);
-    setIsLocalSession(false);
     setIsLiveSync(false);
   };
 
   useEffect(() => {
     if (auth && !isLocalSession) {
-      fetchData();
+      // On mount: if items are present, do a silent check. If items are missing, do full fetch.
+      // On login: items is cleared by the handler, so it triggers a full fetch.
+      fetchData(items.length > 0);
     }
   }, [auth]);
 
@@ -299,7 +312,7 @@ function ZoteroReader() {
     if (!auth) return;
     
     // Efficiency: check library version first if silent
-    if (silent && libraryVersion !== '0') {
+    if (silent && libraryVersion !== '0' && items.length > 0) {
       try {
         const userID = auth.userID;
         const libraryType = (auth as any).libraryType === 'group' || (auth as any).libraryType === 'groups' ? 'groups' : 'users';
@@ -449,6 +462,7 @@ function ZoteroReader() {
 
     setIsLoading(true);
     setSyncError(null);
+    setItems([]); // Clear existing items to avoid "inaccurate data" confusion during switch
     setDbStatus('Validating Connection...');
 
     const payload: AuthPayload = {
@@ -461,7 +475,6 @@ function ZoteroReader() {
     } as any;
 
     setAuth(payload);
-    setIsLocalSession(false);
     setIsLiveSync(true); // Default to live sync for cloud accounts
   };
 
@@ -487,28 +500,54 @@ function ZoteroReader() {
 
   // Metrics calculation
   const metrics = useMemo(() => {
-    const total = items.length;
-    const reading = items.filter(isReading).length;
-    const read = items.filter(isRead).length;
-    const queued = items.filter(isQueued).length;
+    const counts = { total: 0, reading: 0, read: 0, queued: 0 };
+    const typeCounts: Record<string, number> = {};
+    const collectionExposures: Record<string, number> = {};
+    const monthlyStats: Record<string, number> = {};
+    const habitGroup: Record<string, number> = {};
 
-    const types = items.reduce((acc, item) => {
-      acc[item.data.itemType] = (acc[item.data.itemType] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
+    counts.total = items.length;
 
-    const typeData = Object.entries(types).map(([name, value]) => ({ name, value }));
+    items.forEach(item => {
+      // Core counters
+      if (isRead(item)) counts.read++;
+      else if (isReading(item)) counts.reading++;
+      else if (isQueued(item)) counts.queued++;
+
+      // Type data
+      const iType = item.data.itemType;
+      typeCounts[iType] = (typeCounts[iType] || 0) + 1;
+
+      // Collection data
+      (item.meta.collections || []).forEach(c => {
+        collectionExposures[c] = (collectionExposures[c] || 0) + 1;
+      });
+
+      // Monthly Stats (Added)
+      const dateAdded = new Date(item.data.dateAdded);
+      const month = dateAdded.toLocaleString('default', { month: 'short' });
+      monthlyStats[month] = (monthlyStats[month] || 0) + 1;
+
+      // Habit data indexing
+      const dateMod = (item.data.dateModified || '').split(/[ T]/)[0];
+      if (dateMod) habitGroup[dateMod] = (habitGroup[dateMod] || 0) + 1;
+    });
+
+    const typeData = Object.entries(typeCounts).map(([name, value]) => ({ name, value }));
+    const monthlyData = Object.entries(monthlyStats).map(([name, count]) => ({ name, count }));
 
     // Habit data: filter based on timeRange
     const now = new Date();
     const rangeLength = timeRange === 'weekly' ? 7 : timeRange === 'monthly' ? 30 : 90;
     
     const habitDays = Array.from({ length: rangeLength }, (_, i) => {
+      // Use UTC consistently to avoid "tile shows 3 but data of 2nd" issue
       const d = new Date();
-      d.setDate(now.getDate() - (rangeLength - 1 - i));
+      d.setUTCHours(0, 0, 0, 0);
+      d.setUTCDate(d.getUTCDate() - (rangeLength - 1 - i));
+      
       const dayStr = d.toISOString().split('T')[0];
-      const activityCount = items.filter(item => item.data.dateModified.startsWith(dayStr)).length;
-      return { date: dayStr, count: activityCount, display: d.getDate() };
+      return { date: dayStr, count: habitGroup[dayStr] || 0, display: d.getUTCDate() };
     });
 
     const currentStreak = habitDays.reduceRight((acc, day) => {
@@ -518,36 +557,18 @@ function ZoteroReader() {
       return { ...acc, counting: false };
     }, { count: 0, counting: true }).count;
 
-    // Project monthly stats
-    const monthlyStats = items.reduce((acc, item) => {
-      const date = new Date(item.data.dateAdded);
-      const month = date.toLocaleString('default', { month: 'short' });
-      acc[month] = (acc[month] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-
-    const monthlyData = Object.entries(monthlyStats).map(([name, count]) => ({ name, count }));
-    
-    // Additional Insights
     const itemsPerWeek = Math.round((items.filter(i => {
       const addedDate = new Date(i.data.dateAdded);
       return (now.getTime() - addedDate.getTime()) < (30 * 24 * 60 * 60 * 1000);
     }).length) / 4);
-
-    const collectionExposures = items.reduce((acc, item) => {
-      (item.meta.collections || []).forEach(c => {
-        acc[c] = (acc[c] || 0) + 1;
-      });
-      return acc;
-    }, {} as Record<string, number>);
 
     const topCollections = (Object.entries(collectionExposures) as [string, number][])
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
       .map(([name, count]) => ({ name, count }));
 
-    return { total, reading, read, queued, typeData, monthlyData, habitDays, currentStreak, itemsPerWeek, topCollections };
-  }, [items, timeRange]);
+    return { ...counts, typeData, monthlyData, habitDays, currentStreak, itemsPerWeek, topCollections };
+  }, [items, timeRange, tagConfig]);
 
   const filteredItems = items.filter(item => {
     const title = item.data.title || '';
@@ -806,6 +827,12 @@ function ZoteroReader() {
                    <span className="text-[10px] font-black bg-blue-600 text-white px-3 py-1 rounded-lg tracking-widest uppercase shadow-sm">CLOUD</span>
                  )}
                  <span className="text-[10px] text-slate-300 font-black uppercase ml-1">{metrics.total} ITEMS</span>
+                 {syncError && (
+                   <div className="ml-4 flex items-center gap-2 text-[10px] font-black text-red-500 uppercase tracking-tight animate-pulse">
+                     <X size={12} className="bg-red-500 text-white rounded-full p-0.5" />
+                     <span>Sync Failed: {syncError}</span>
+                   </div>
+                 )}
             </div>
           </div>
 
@@ -981,24 +1008,24 @@ function ZoteroReader() {
                 className="space-y-6"
               >
                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <MetricCard label="Knowledge Gain" value={items.reduce((acc, i) => acc + (i.meta.annotationCount || 0), 0)} subLabel="Total Annotations" />
-                    <MetricCard label="Velocity" value={`${metrics.itemsPerWeek}/wk`} subLabel="Capture Rate" status="up" />
+                    <MetricCard label="Reading Depth" value={items.reduce((acc, i) => acc + (i.meta.annotationCount || 0), 0)} subLabel="Total Annotations" />
+                    <MetricCard label="Reading Rate" value={`${metrics.itemsPerWeek}/wk`} subLabel="Consumption Rate" status="up" />
                     <MetricCard label="Knowledge Density" value={(items.reduce((acc, i) => acc + (i.meta.annotationCount || 0), 0) / Math.max(1, metrics.total)).toFixed(1)} subLabel="Notes per Library Item" />
                     <MetricCard label="Coverage" value={`${Math.round((items.filter(i => (i.meta.collections || []).length > 0).length / Math.max(1, metrics.total)) * 100)}%`} subLabel="Organized Items" />
                  </div>
 
                  <div className="grid grid-cols-12 gap-6">
-                    {/* Activity Map */}
+                    {/* Reading Progress Map */}
                     <div className="col-span-12 lg:col-span-8 bg-white p-8 border border-slate-200 rounded-3xl shadow-sm">
                       <div className="flex justify-between items-center mb-8">
                         <div>
-                          <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-1 italic">Contribution Map</h3>
+                          <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-1 italic">Reading Progress Map</h3>
                           <div className="flex items-center gap-4">
                              <p className="text-[11px] text-slate-400 font-bold uppercase tracking-tight">
                                {selectedDate ? `Selected date: ${selectedDate}` : 'Log of research activity'}
                              </p>
                              <div className="flex bg-slate-50 rounded-xl p-0.5 border border-slate-100">
-                               {['7D', '30D', 'ALL'].map((r, i) => {
+                               {['7D', '30D', '90D'].map((r, i) => {
                                  const key = ['weekly', 'monthly', 'overall'][i] as any;
                                  return (
                                    <button 
@@ -1057,7 +1084,7 @@ function ZoteroReader() {
                           className="mt-8 border-t border-slate-50 pt-6"
                         >
                           <div className="flex items-center justify-between mb-4">
-                             <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Activity Detail: {selectedDate}</div>
+                             <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Reading Detail: {selectedDate}</div>
                              <button onClick={() => setSelectedDate(null)} className="text-[10px] font-bold text-blue-600 hover:underline">Collapse Log ×</button>
                           </div>
                           <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
@@ -1104,12 +1131,12 @@ function ZoteroReader() {
                       )}
                     </div>
 
-                    {/* Operational Health */}
+                    {/* Reading Engagement */}
                     <div className="col-span-12 lg:col-span-4 bg-white p-8 border border-slate-200 rounded-3xl shadow-sm flex flex-col">
-                      <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-8 italic">Productivity Metrics</h3>
+                      <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-8 italic">Reading Habits</h3>
                       <div className="space-y-8 flex-1">
-                        <HealthBar label="Habit Strength" value={Math.round((metrics.currentStreak / 7) * 100)} color="bg-orange-500" />
-                        <HealthBar label="Collection Completion" value={Math.round((metrics.read / Math.max(1, metrics.total)) * 100)} color="bg-blue-600" />
+                        <HealthBar label="Consistency" value={Math.round((metrics.currentStreak / 7) * 100)} color="bg-orange-500" />
+                        <HealthBar label="Library Mastery" value={Math.round((metrics.read / Math.max(1, metrics.total)) * 100)} color="bg-blue-600" />
                         <HealthBar label="Library Health" value={100} color="bg-emerald-500" />
                       </div>
                       
