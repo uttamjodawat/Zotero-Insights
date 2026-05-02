@@ -2,6 +2,14 @@
 
 A high-performance research analytics dashboard for Zotero users. Synthesize your research activity, track reading habits, and visualize your "Knowledge Foundation" through deep annotation metrics.
 
+## Privacy & Security
+
+**Your data is yours.** This application is built with a **Client-Side Only Architecture**:
+- **Direct Communication**: The app communicates directly from your browser to the Zotero API.
+- **No Proxy Server**: Unlike many other Zotero dashboards, there is no backend server acting as a middleman.
+- **Local Persistence**: Your API keys and library data are stored locally in your browser's `localStorage`. They are never sent to any third-party server (except Zotero itself).
+- **SQLite Processing**: If you use the local database option, the `zotero.sqlite` file is processed locally in your browser using WebAssembly — it is never uploaded to any server.
+
 ## Features
 
 - **Knowledge Library**: A prioritized view of your most heavily annotated research items.
