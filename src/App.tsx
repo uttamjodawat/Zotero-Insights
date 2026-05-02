@@ -119,6 +119,7 @@ function ZoteroReader() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'dashboard' | 'library'>('dashboard');
   const [timeRange, setTimeRange] = useState<'weekly' | 'monthly' | 'overall'>('monthly');
+  const [topItemsLimit, setTopItemsLimit] = useState(20);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [libraryFilter, setLibraryFilter] = useState<'all' | 'reading' | 'queue' | 'read'>('all');
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>({ key: 'dateModified', direction: 'desc' });
@@ -640,9 +641,9 @@ function ZoteroReader() {
 
   // Metrics calculation
   const metrics = useMemo(() => {
-    const counts = { total: 0, reading: 0, read: 0, queued: 0 };
+    const counts = { total: 0, reading: 0, read: 0, queued: 0, annotated: 0 };
     const typeCounts: Record<string, number> = {};
-    const collectionExposures: Record<string, number> = {};
+    const collectionStats: Record<string, { total: number, annotated: number }> = {};
     const monthlyStats: Record<string, number> = {};
     const habitGroup: Record<string, number> = {};
 
@@ -654,13 +655,19 @@ function ZoteroReader() {
       else if (isReading(item)) counts.reading++;
       else if (isQueued(item)) counts.queued++;
 
+      if ((item.meta.annotationCount || 0) > 0) counts.annotated++;
+
       // Type data
       const iType = item.data.itemType;
       typeCounts[iType] = (typeCounts[iType] || 0) + 1;
 
       // Collection data
       (item.meta.collections || []).forEach(c => {
-        collectionExposures[c] = (collectionExposures[c] || 0) + 1;
+        if (!collectionStats[c]) collectionStats[c] = { total: 0, annotated: 0 };
+        collectionStats[c].total++;
+        if ((item.meta.annotationCount || 0) > 0) {
+          collectionStats[c].annotated++;
+        }
       });
 
       // Monthly Stats (Added)
@@ -704,12 +711,16 @@ function ZoteroReader() {
       return (now.getTime() - addedDate.getTime()) < (30 * 24 * 60 * 60 * 1000);
     }).length) / 4);
 
-    const topCollections = (Object.entries(collectionExposures) as [string, number][])
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([name, count]) => ({ name, count }));
+    const collectionFocus = Object.entries(collectionStats)
+      .map(([name, stats]) => ({
+        name,
+        total: stats.total,
+        annotated: stats.annotated,
+        ratio: stats.total > 0 ? (stats.annotated / stats.total) * 100 : 0
+      }))
+      .sort((a, b) => b.annotated - a.annotated);
 
-    return { ...counts, typeData, monthlyData, habitDays, currentStreak, itemsPerWeek, topCollections };
+    return { ...counts, typeData, monthlyData, habitDays, currentStreak, itemsPerWeek, collectionFocus };
   }, [items, timeRange, tagConfig]);
 
   const filteredItems = items.filter(item => {
@@ -1294,48 +1305,76 @@ function ZoteroReader() {
                       <div className="space-y-8 flex-1">
                         <HealthBar label="Consistency" value={Math.round((metrics.currentStreak / 7) * 100)} color="bg-orange-500" />
                         <HealthBar label="Library Mastery" value={Math.round((metrics.read / Math.max(1, metrics.total)) * 100)} color="bg-blue-600" />
-                        <HealthBar label="Library Health" value={100} color="bg-emerald-500" />
+                        <HealthBar label="Annotated Coverage" value={Math.round((metrics.annotated / Math.max(1, metrics.total)) * 100)} color="bg-emerald-500" />
                       </div>
-                      
-                      <div className="mt-8 space-y-6">
-                        <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest italic">Collection Focus</h3>
-                        <div className="space-y-4">
-                          {metrics.topCollections.map((col, idx) => (
-                            <div key={col.name} className="relative">
+                                          <div className="mt-8 space-y-6 flex-1 flex flex-col min-h-0">
+                        <div className="flex justify-between items-end">
+                           <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest italic">Collection Focus</h3>
+                           <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">% Annotated</span>
+                        </div>
+                        <div className="space-y-4 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar">
+                          {metrics.collectionFocus.map((col, idx) => (
+                            <div key={col.name} className="relative group">
                                <div className="flex justify-between items-center mb-1">
                                   <span className="text-[9px] font-black uppercase text-slate-900 truncate pr-4">{idx + 1}. {col.name}</span>
-                                  <span className="text-[9px] font-bold text-slate-400">{col.count} Items</span>
+                                  <div className="flex items-center gap-2">
+                                     <span className="text-[8px] font-bold text-slate-300">{col.annotated}/{col.total}</span>
+                                     <span className="text-[9px] font-black text-blue-600 w-8 text-right">{Math.round(col.ratio)}%</span>
+                                  </div>
                                </div>
                                <div className="w-full bg-slate-50 h-1.5 rounded-full overflow-hidden">
                                   <motion.div 
                                     initial={{ width: 0 }}
-                                    animate={{ width: `${(col.count / Math.max(1, metrics.total)) * 100}%` }}
-                                    className="h-full bg-blue-600 rounded-full"
+                                    animate={{ width: `${col.ratio}%` }}
+                                    className={`h-full rounded-full ${col.ratio > 75 ? 'bg-emerald-500' : col.ratio > 30 ? 'bg-blue-600' : 'bg-slate-300'}`}
                                   />
                                </div>
                             </div>
                           ))}
+                          {metrics.collectionFocus.length === 0 && (
+                            <div className="text-[10px] text-slate-400 italic text-center py-4">No collections found</div>
+                          )}
                         </div>
                       </div>
                     </div>
 
                     {/* Highly Annotated Items - LIST VIEW */}
                     <div className="col-span-12 bg-white border border-slate-200 p-10 rounded-[3rem] shadow-sm">
-                       <div className="mb-10 flex justify-between items-end">
+                       <div className="mb-10 flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
                           <div>
                             <h2 className="text-sm font-black text-slate-900 uppercase tracking-[0.3em] mb-2 italic">Knowledge Foundation</h2>
                             <p className="text-[11px] text-slate-400 font-bold uppercase tracking-tight italic">Synthesis of your most deeply analyzed research and reference materials</p>
                           </div>
-                          <div className="text-[10px] font-black text-slate-300 uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-xl">
-                             Showing top {Math.min(24, items.filter(i => (i.meta.annotationCount || 0) > 0).length)} Analyzed Items
+                          <div className="flex items-center gap-4">
+                             <div className="flex bg-slate-50 p-1 rounded-xl border border-slate-100">
+                               {[10, 20, 50, 100, 200].map((num) => (
+                                 <button
+                                   key={num}
+                                   onClick={() => setTopItemsLimit(num)}
+                                   className={`px-3 py-1.5 rounded-lg text-[9px] font-black transition-all ${
+                                     topItemsLimit === num ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                                   }`}
+                                 >
+                                   {num}
+                                 </button>
+                               ))}
+                             </div>
+                             <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50 px-4 py-2.5 rounded-xl border border-slate-100">
+                                Top {topItemsLimit} Deeply Read
+                             </div>
                           </div>
                        </div>
                        
                        <div className="space-y-4">
                           {items
                             .filter(i => (i.meta.annotationCount || 0) > 0)
-                            .sort((a, b) => (b.meta.annotationCount || 0) - (a.meta.annotationCount || 0))
-                            .slice(0, 24)
+                            .sort((a, b) => {
+                              const countA = Number(a.meta.annotationCount) || 0;
+                              const countB = Number(b.meta.annotationCount) || 0;
+                              if (countA !== countB) return countB - countA;
+                              return new Date(b.data.dateModified).getTime() - new Date(a.data.dateModified).getTime();
+                            })
+                            .slice(0, topItemsLimit)
                             .map((item, idx) => (
                               <motion.div 
                                 key={item.key} 

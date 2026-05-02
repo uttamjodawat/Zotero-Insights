@@ -1,63 +1,72 @@
 # Zotero Knowledge Dashboard
 
-A high-performance research analytics dashboard for Zotero users. Synthesize your research activity, track reading habits, and visualize your "Knowledge Foundation" through deep annotation metrics.
+A precision-engineered research analytics dashboard for Zotero users. Transform your bibliographic data into a "Knowledge Foundation" through deep annotation metrics, activity tracking, and intelligent collection analysis.
 
-## Privacy & Security
+## 🛡️ Privacy & Security
 
-**Your data is yours.** This application is built with a **Client-Side Only Architecture**:
-- **Direct Communication**: The app communicates directly from your browser to the Zotero API.
-- **No Proxy Server**: Unlike many other Zotero dashboards, there is no backend server acting as a middleman.
-- **Local Persistence**: Your API keys and library data are stored locally in your browser's `localStorage`. They are never sent to any third-party server (except Zotero itself).
-- **SQLite Processing**: If you use the local database option, the `zotero.sqlite` file is processed locally in your browser using WebAssembly — it is never uploaded to any server.
+**Your data stays with you.** This application is built with a **Client-Side Only Architecture**:
+- **Direct Peer-to-Peer Communication**: The app communicates directly from your browser to the official Zotero API.
+- **Zero Intermediaries**: No backend server, no database cloud, and no proxy acts as a middleman.
+- **Encrypted Local Storage**: Your API keys and library metadata are stored exclusively in your browser's `localStorage`.
+- **Stateless Execution**: The application does not track you. Once the browser session ends, the only thing that remains is your locally cached Zotero metadata.
 
-## Features
+## 🚀 Key Features
 
-- **Knowledge Library**: A prioritized view of your most heavily annotated research items.
-- **Contribution Map**: Visual heat-map of your research and sync activity.
-- **Productivity Metrics**: Track velocity (capture rate), knowledge density, and library coverage.
-- **Real-time Sync**: Intelligent polling that respects Zotero API limits and versioning.
-- **Smart Filtering**: Filter by reading status, tags, and collections.
-- **PDF Integration**: One-click opening of items directly in Zotero via `zotero://` URI schemes.
+### 1. Research Intelligence (Dashboard)
+- **Annotated Coverage**: Tracks what percentage of your library has been actively processed (items with 1+ annotations).
+- **Library Mastery**: Visualizes your progress in marking items as "Read," helping you bridge the gap between collection and consumption.
+- **Consistency Tracker**: Monitors your research frequency with a 7-day rolling activity streak.
+- **Collection Focus**: A specialized metric that compares the **Total Items** in a collection against the **Summation of Annotated Items**. This allows you to differentiate between "archival" collections and "active research" zones.
 
-## Tech Stack
+### 2. Knowledge Foundation
+- **Deep Analysis View**: Automatically surface your most heavily analyzed research materials based on annotation counts.
+- **Configurable Scale**: Toggle between viewing the Top 10, 20, 50, 100, or 200 most impactful items in your library.
+- **Intelligent Sorting**: Items are prioritized by annotation density, with recent modifications serving as a secondary tie-breaker.
 
-- **Frontend**: React 18, Vite, Tailwind CSS, Motion (Animation), Lucide Icons.
-- **Backend**: Node.js (Express), Axios (OAuth & API Proxying).
-- **Visualization**: Recharts (D3-based).
+### 3. Zotero Desktop Integration
+- **Deep Linking**: One-click opening of items directly in the Zotero desktop app via `zotero://` URI schemes.
+- **PDF Protocol**: If an item has an attached PDF, the dashboard will attempt to open it directly in the Zotero PDF viewer.
 
-## Setup & Local Development
+### 4. Smart Sync Engine
+- **Incremental Sync**: The dashboard uses Zotero's `Last-Modified-Version` protocols to perform delta updates, saving bandwidth and respecting API rate limits.
+- **Group Support**: Seamlessly switch between your personal library and shared group libraries.
 
-1. **Clone the repository**:
+## 🛠️ Tech Stack
+
+- **Framework**: [React 19](https://react.dev/)
+- **Build Tool**: [Vite](https://vitejs.dev/)
+- **Styling**: [Tailwind CSS 4](https://tailwindcss.com/)
+- **Animation**: [Motion](https://motion.dev/) (formerly Framer Motion)
+- **Icons**: [Lucide React](https://lucide.dev/)
+- **Data Viz**: [Recharts](https://recharts.org/)
+
+## 📖 Setup & Usage
+
+### Local Development
+
+1. **Clone & Install**:
    ```bash
-   git clone <your-repo-url>
-   cd zotero-dashboard
-   ```
-
-2. **Install dependencies**:
-   ```bash
+   git clone <repo-url>
    npm install
    ```
 
-3. **Environment Variables**:
-   Create a `.env` file in the root directory and add:
-   ```env
-   # If you use Zotero OAuth (optional)
-   ZOTERO_CLIENT_ID=your_client_id
-   ZOTERO_CLIENT_SECRET=your_client_secret
-   ```
-
-4. **Run the application**:
+2. **Run**:
    ```bash
    npm run dev
    ```
-   The app will be available at `http://localhost:3000`.
 
-## Production Readiness
+3. **Configure**:
+   - Obtain your **Zotero API Key** from [Zotero Settings](https://www.zotero.org/settings/keys).
+   - Enter your **User ID** (found on the same settings page).
+   - If using a group, provide the **Group ID** and set the library type to `Groups`.
 
-- **API Optimization**: Uses `Last-Modified-Version` headers to skip unnecessary API calls if the library hasn't changed.
-- **Security**: Backend proxying ensures Zotero API keys and OAuth secrets are never exposed to the client-side browser.
-- **Responsive**: Fully optimized for mobile, tablet, and desktop views with a "Swiss-Modern" design aesthetic.
+## 🎨 Design Philosophy
 
-## License
+The dashboard follows a **Swiss-Modern** aesthetic:
+- **High Contrast**: Bold typography and clean whitespace.
+- **Information Density**: Maximum utility without visual clutter.
+- **Motion-Driven**: Staggered entrances and smooth transitions to improve perceived performance and spatial orientation.
 
-MIT
+---
+
+*Built with ❤️ for the research community.*
