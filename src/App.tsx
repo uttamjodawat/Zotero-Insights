@@ -49,6 +49,7 @@ function ZoteroReader() {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [libraryVersion, setLibraryVersion] = useState(() => localStorage.getItem('zotero_library_version') || '0');
+  const [syncError, setSyncError] = useState<string | null>(null);
   
   const [tagConfig, setTagConfig] = useState(() => {
     const saved = localStorage.getItem('zotero_tag_config');
@@ -301,7 +302,8 @@ function ZoteroReader() {
     if (silent && libraryVersion !== '0') {
       try {
         const userID = auth.userID;
-        const libraryType = (auth as any).libraryType || (auth.username?.includes('Group') ? 'groups' : 'users');
+        const libraryType = (auth as any).libraryType === 'group' ? 'groups' : 
+                          (auth as any).libraryType || (auth.username?.includes('Group') ? 'groups' : 'users');
         const baseUrl = `https://api.zotero.org/${libraryType}/${userID}/items`;
         
         const params = new URLSearchParams({ limit: '1' });
@@ -312,9 +314,9 @@ function ZoteroReader() {
         }
 
         const checkRes = await fetch(`${baseUrl}?${params.toString()}`, { headers });
-        const currentVersion = checkRes.headers.get('last-modified-version');
+        const currentVersion = checkRes.headers.get('last-modified-version') || checkRes.headers.get('Last-Modified-Version');
         
-        if (currentVersion === libraryVersion) {
+        if (currentVersion && currentVersion === libraryVersion) {
           console.log('Zotero sync skipped: No changes detected (Version: ' + currentVersion + ')');
           setLastSyncTime(new Date());
           return;
@@ -326,12 +328,14 @@ function ZoteroReader() {
 
     if (!silent) {
       setIsLoading(true);
-      setLoadStats({ current: 0, total: 0 });
+      setSyncError(null);
+      setLoadStats({ current: 0, total: 100 }); // Default estimate
     }
     
     try {
       const userID = auth.userID;
-      const libraryType = (auth as any).libraryType || (auth.username?.includes('Group') ? 'groups' : 'users');
+      const libraryType = (auth as any).libraryType === 'group' ? 'groups' : 
+                        (auth as any).libraryType || (auth.username?.includes('Group') ? 'groups' : 'users');
       const baseApiUrl = `https://api.zotero.org/${libraryType}/${userID}`;
       
       const headers: any = { 'Zotero-API-Version': '3' };
@@ -341,9 +345,10 @@ function ZoteroReader() {
 
       // 1. Fetch Collections
       const collRes = await fetch(`${baseApiUrl}/collections?limit=100`, { headers });
+      if (!collRes.ok) throw new Error(`Collections error: ${collRes.status}`);
       const collectionsData = await collRes.json();
       
-      const latestVersion = collRes.headers.get('last-modified-version');
+      const latestVersion = collRes.headers.get('last-modified-version') || collRes.headers.get('Last-Modified-Version');
       if (latestVersion) {
         setLibraryVersion(latestVersion);
       }
@@ -359,10 +364,11 @@ function ZoteroReader() {
       // 2. Fetch All Items
       let start = 0;
       const limit = 100;
-      let total = 1;
+      let total = 999999; // Assume large until we get a real count or a small batch
       let rawItems: any[] = [];
+      let hasMore = true;
 
-      while (start < total) {
+      while (hasMore && start < total) {
         const queryParams = new URLSearchParams({
           start: start.toString(),
           limit: limit.toString(),
@@ -370,36 +376,39 @@ function ZoteroReader() {
         });
         
         const response = await fetch(`${baseApiUrl}/items?${queryParams.toString()}`, { headers });
+        if (!response.ok) throw new Error(`Items error: ${response.status}`);
+        
         const batchData = await response.json();
         
         if (start === 0) {
-          total = Math.min(parseInt(response.headers.get('total-results') || '0', 10), 10000);
-          setLoadStats(prev => ({ ...prev, total }));
+          const totalHeader = response.headers.get('total-results') || response.headers.get('Total-Results');
+          if (totalHeader) {
+            total = Math.min(parseInt(totalHeader, 10), 10000);
+            setLoadStats(prev => ({ ...prev, total }));
+          }
           
-          const itemsVersion = response.headers.get('last-modified-version');
+          const itemsVersion = response.headers.get('last-modified-version') || response.headers.get('Last-Modified-Version');
           if (itemsVersion) setLibraryVersion(itemsVersion);
         }
 
         if (Array.isArray(batchData)) {
+          if (batchData.length < limit) hasMore = false;
+          if (batchData.length === 0) break;
+          
           rawItems = [...rawItems, ...batchData];
           
-          // Incremental processing: Separate parents and children
+          // Incremental processing
           const parents = rawItems.filter(i => !i.data.parentItem && !['attachment', 'note'].includes(i.data.itemType));
           const children = rawItems.filter(i => i.data.parentItem);
 
           const processed = parents.map(p => {
-            // Find PDF attachments for this parent
             const attachments = children.filter(c => c.data.parentItem === p.key && c.data.itemType === 'attachment');
             const pdf = attachments.find(a => a.data.contentType === 'application/pdf') || attachments[0];
             
-            // Calculate knowledge count: sum of children that aren't binary attachments 
-            // Usually p.meta.numChildren includes everything. 
-            // A more accurate proxy for "Annotations/Notes" in Zotero API:
             let knowledgeTotal = p.meta.numChildren || 0;
             attachments.forEach(a => {
               knowledgeTotal += (a.meta.numChildren || 0);
             });
-            // Subtract the attachments themselves if we want purely notes/annotations
             knowledgeTotal = Math.max(0, knowledgeTotal - attachments.length);
 
             return {
@@ -415,17 +424,21 @@ function ZoteroReader() {
           });
 
           setItems(processed);
-          setLoadStats(prev => ({ ...prev, current: rawItems.length }));
+          setLoadStats(prev => ({ 
+            current: rawItems.length, 
+            total: hasMore ? Math.max(total, rawItems.length + 1) : rawItems.length 
+          }));
           setLastSyncTime(new Date());
         } else {
           break;
         }
 
         start += limit;
-        if (start > 15000) break;
+        if (start > 10000) break;
       }
     } catch (error) {
       console.error('Failed to fetch data', error);
+      setSyncError(error instanceof Error ? error.message : 'Sync Failed');
     } finally {
       setIsLoading(false);
     }
@@ -436,6 +449,7 @@ function ZoteroReader() {
     if (!directKeyData.userID || !directKeyData.apiKey) return;
 
     setIsLoading(true);
+    setSyncError(null);
     setDbStatus('Validating Connection...');
 
     const payload: AuthPayload = {
@@ -606,6 +620,14 @@ function ZoteroReader() {
           </div>
 
           <h2 className="text-2xl font-bold mb-4 text-slate-900">Research Insight Desktop</h2>
+          
+          {syncError && (
+            <div className="mb-6 p-3 bg-red-50 border border-red-100 rounded-lg text-red-600 text-[10px] font-bold uppercase tracking-tight flex items-center gap-2">
+              <X size={14} className="bg-red-600 text-white rounded-full p-0.5" />
+              <span>{syncError}</span>
+            </div>
+          )}
+
           <p className="mb-8 leading-relaxed text-slate-600 text-sm">
             {dbStatus ? (
               <span className="text-blue-500 font-bold animate-pulse">{dbStatus}</span>
