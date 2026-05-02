@@ -501,39 +501,74 @@ function ZoteroReader() {
           const parents = batchData.filter(i => !i.data.parentItem && !['attachment', 'note'].includes(i.data.itemType));
           const children = batchData.filter(i => i.data.parentItem);
 
-          const processed = parents.map(p => {
-            const attachments = children.filter(c => c.data.parentItem === p.key && c.data.itemType === 'attachment');
-            const pdf = attachments.find(a => a.data.contentType === 'application/pdf') || attachments[0];
-            
-            let knowledgeTotal = p.meta.numChildren || 0;
-            attachments.forEach(a => {
-              knowledgeTotal += (a.meta.numChildren || 0);
-            });
-            knowledgeTotal = Math.max(0, knowledgeTotal - attachments.length);
-
-            return {
-              key: p.key,
-              data: p.data,
-              meta: {
-                creatorSummary: p.meta.creatorSummary || 'Unknown Creator',
-                attachmentKey: pdf?.key || '',
-                annotationCount: knowledgeTotal,
-                collections: (p.data.collections || []).map((id: string) => collNameMap[id] || id)
-              }
-            };
-          });
-
+          // We'll process everything in setItems to have access to previous state for incremental updates
           if (isIncremental) {
             setItems(prev => {
-              const newMap = new Map(prev.map(i => [i.key, i]));
-              processed.forEach(newItem => {
-                newMap.set(newItem.key, newItem);
+              const newMap = new Map<string, ZoteroItem>(prev.map(i => [i.key, i]));
+              
+              // First, handle all items in batch that might be children updating parents
+              children.forEach(child => {
+                const parentKey = child.data.parentItem;
+                const existingParent = newMap.get(parentKey);
+                if (existingParent && (child.data.contentType === 'application/pdf' || child.data.filename?.toLowerCase().endsWith('.pdf'))) {
+                  // Clone to ensure React detects change
+                  newMap.set(parentKey, {
+                    ...existingParent,
+                    meta: {
+                      ...existingParent.meta,
+                      attachmentKey: child.key
+                    }
+                  });
+                }
               });
+
+              // Then update parent items themselves
+              parents.forEach(p => {
+                const existing = newMap.get(p.key);
+                const attachments = children.filter(c => c.data.parentItem === p.key && c.data.itemType === 'attachment');
+                const pdf = attachments.find(a => a.data.contentType === 'application/pdf') || attachments[0];
+                
+                const collections = (p.data.collections || []).map((id: string) => collNameMap[id] || id);
+
+                newMap.set(p.key, {
+                  ...p,
+                  meta: {
+                    ...p.meta,
+                    creatorSummary: p.meta.creatorSummary || existing?.meta.creatorSummary || 'Unknown Creator',
+                    // Use new PDF if found, else preserve old one
+                    attachmentKey: pdf?.key || existing?.meta.attachmentKey || '',
+                    // Preserve annotation count if not explicitly recalculated
+                    annotationCount: existing?.meta.annotationCount || p.meta.numChildren || 0,
+                    collections: collections.length > 0 ? collections : (existing?.meta.collections || [])
+                  }
+                });
+              });
+              
               return Array.from(newMap.values());
             });
           } else {
-            // During full sync, we replace items batch by batch initially to show progress, 
-            // but we need to accumulate them in local rawItems equivalent
+            // Full Sync Logic
+            const processed = parents.map(p => {
+              const attachments = children.filter(c => c.data.parentItem === p.key && c.data.itemType === 'attachment');
+              const pdf = attachments.find(a => a.data.contentType === 'application/pdf') || attachments[0];
+              
+              let knowledgeTotal = p.meta.numChildren || 0;
+              attachments.forEach(a => {
+                knowledgeTotal += (a.meta.numChildren || 0);
+              });
+              knowledgeTotal = Math.max(0, knowledgeTotal - attachments.length);
+
+              return {
+                ...p,
+                meta: {
+                  ...p.meta,
+                  attachmentKey: pdf?.key || '',
+                  annotationCount: knowledgeTotal,
+                  collections: (p.data.collections || []).map((id: string) => collNameMap[id] || id)
+                }
+              };
+            });
+
             if (start === 0) {
               setItems(processed);
             } else {
@@ -700,12 +735,16 @@ function ZoteroReader() {
 
   const getZoteroLink = (item: ZoteroItem) => {
     const isGroup = auth?.libraryType === 'groups' || (auth as any)?.libraryType === 'group';
-    const libPrefix = isGroup ? `groups/${auth?.userID}` : 'library';
+    const libId = auth?.userID || '';
+    const libPrefix = isGroup ? `groups/${libId}` : 'library';
     
+    // Prioritize opening PDF if we have an attachment key
     if (item.meta.attachmentKey) {
-      const page = (item.meta.lastPage || 0) + 1;
-      return `zotero://open-pdf/${libPrefix}/items/${item.meta.attachmentKey}?page=${page}`;
+      // Use the open-pdf protocol which is more reliable for viewing
+      return `zotero://open-pdf/${libPrefix}/items/${item.meta.attachmentKey}`;
     }
+    
+    // Fallback to selecting the parent item in the library
     return `zotero://select/${libPrefix}/items/${item.key}`;
   };
 
