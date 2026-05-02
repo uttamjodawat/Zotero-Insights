@@ -300,25 +300,24 @@ function ZoteroReader() {
     // Efficiency: check library version first if silent
     if (silent && libraryVersion !== '0') {
       try {
-        const checkHeaders: any = {};
-        if (auth.token && auth.secret && auth.token !== 'local') {
-          checkHeaders['X-Zotero-Token'] = auth.token;
-          checkHeaders['X-Zotero-Secret'] = auth.secret;
-        }
-        const checkParams = new URLSearchParams({
-          userID: auth.userID,
-          libraryType: (auth as any).libraryType || 'user',
-          limit: '1'
-        });
-        if (auth.apiKey) checkParams.append('apiKey', auth.apiKey);
+        const userID = auth.userID;
+        const libraryType = (auth as any).libraryType || (auth.username?.includes('Group') ? 'groups' : 'users');
+        const baseUrl = `https://api.zotero.org/${libraryType}/${userID}/items`;
         
-        const checkRes = await fetch(`/api/zotero/items?${checkParams.toString()}`, { headers: checkHeaders });
-        const currentVersion = checkRes.headers.get('x-last-modified-version');
+        const params = new URLSearchParams({ limit: '1' });
+        const headers: any = { 'Zotero-API-Version': '3' };
+        
+        if (auth.apiKey) {
+          headers['Zotero-API-Key'] = auth.apiKey;
+        }
+
+        const checkRes = await fetch(`${baseUrl}?${params.toString()}`, { headers });
+        const currentVersion = checkRes.headers.get('last-modified-version');
         
         if (currentVersion === libraryVersion) {
           console.log('Zotero sync skipped: No changes detected (Version: ' + currentVersion + ')');
           setLastSyncTime(new Date());
-          return; // Skip sync as nothing changed
+          return;
         }
       } catch (e) {
         console.error('Version check failed, proceeding with full sync', e);
@@ -331,23 +330,20 @@ function ZoteroReader() {
     }
     
     try {
-      const headers: any = {};
-      if (auth.token && auth.secret && auth.token !== 'local') {
-        headers['X-Zotero-Token'] = auth.token;
-        headers['X-Zotero-Secret'] = auth.secret;
+      const userID = auth.userID;
+      const libraryType = (auth as any).libraryType || (auth.username?.includes('Group') ? 'groups' : 'users');
+      const baseApiUrl = `https://api.zotero.org/${libraryType}/${userID}`;
+      
+      const headers: any = { 'Zotero-API-Version': '3' };
+      if (auth.apiKey) {
+        headers['Zotero-API-Key'] = auth.apiKey;
       }
 
-      const baseParams = new URLSearchParams({
-        userID: auth.userID,
-        libraryType: (auth as any).libraryType || (auth.username.includes('Group') ? 'group' : 'user')
-      });
-      if (auth.apiKey) baseParams.append('apiKey', auth.apiKey);
-
-      // 1. Fetch Collections once to build Name Map
-      const collRes = await fetch(`/api/zotero/collections?${baseParams.toString()}`, { headers });
+      // 1. Fetch Collections
+      const collRes = await fetch(`${baseApiUrl}/collections?limit=100`, { headers });
       const collectionsData = await collRes.json();
       
-      const latestVersion = collRes.headers.get('x-last-modified-version');
+      const latestVersion = collRes.headers.get('last-modified-version');
       if (latestVersion) {
         setLibraryVersion(latestVersion);
       }
@@ -360,26 +356,27 @@ function ZoteroReader() {
         });
       }
 
-      // 2. Fetch All Items to build hierarchy correctly
+      // 2. Fetch All Items
       let start = 0;
       const limit = 100;
       let total = 1;
       let rawItems: any[] = [];
 
       while (start < total) {
-        const queryParams = new URLSearchParams(baseParams);
-        queryParams.append('start', start.toString());
-        queryParams.append('limit', limit.toString());
+        const queryParams = new URLSearchParams({
+          start: start.toString(),
+          limit: limit.toString(),
+          format: 'json'
+        });
         
-        const response = await fetch(`/api/zotero/items?${queryParams.toString()}`, { headers });
+        const response = await fetch(`${baseApiUrl}/items?${queryParams.toString()}`, { headers });
         const batchData = await response.json();
         
         if (start === 0) {
-          total = Math.min(parseInt(response.headers.get('x-total-results') || '0', 10), 10000);
+          total = Math.min(parseInt(response.headers.get('total-results') || '0', 10), 10000);
           setLoadStats(prev => ({ ...prev, total }));
           
-          // Update version from items if collections didn't provide it
-          const itemsVersion = response.headers.get('x-last-modified-version');
+          const itemsVersion = response.headers.get('last-modified-version');
           if (itemsVersion) setLibraryVersion(itemsVersion);
         }
 
@@ -455,25 +452,6 @@ function ZoteroReader() {
     setIsLiveSync(true); // Default to live sync for cloud accounts
   };
 
-  const handleLogin = async () => {
-    try {
-      const res = await fetch('/api/auth/zotero');
-      const { url } = await res.json();
-      const authWindow = window.open(url, 'zotero_auth', 'width=600,height=700');
-      
-      const handleMessage = (event: MessageEvent) => {
-        if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
-          const payload = event.data.payload;
-          setAuth(payload);
-          localStorage.setItem('zotero_auth', JSON.stringify(payload));
-          window.removeEventListener('message', handleMessage);
-        }
-      };
-      window.addEventListener('message', handleMessage);
-    } catch (error) {
-      console.error('Auth error', error);
-    }
-  };
 
   // Reading status helpers - reusable
   const isReading = (item: ZoteroItem) => item.data.tags?.some(t => {
@@ -653,21 +631,13 @@ function ZoteroReader() {
                   <div className="relative flex justify-center text-[9px] uppercase font-bold text-slate-300"><span className="bg-white px-2 tracking-widest">Or Realtime Cloud Sync</span></div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3">
                   <button 
                     onClick={() => setShowDirectKeyForm(true)}
                     className="border border-slate-200 text-slate-500 py-3 rounded-lg font-bold text-[9px] uppercase tracking-widest hover:bg-slate-50 transition-all flex flex-col items-center justify-center gap-1"
                   >
                     <RefreshCw size={14} />
-                    <span>API Key</span>
-                  </button>
-
-                  <button 
-                    onClick={handleLogin}
-                    className="border border-slate-200 text-slate-500 py-3 rounded-lg font-bold text-[9px] uppercase tracking-widest hover:bg-slate-50 transition-all flex flex-col items-center justify-center gap-1"
-                  >
-                    <ChevronRight size={14} />
-                    <span>OAuth</span>
+                    <span>Cloud Sync (API Key)</span>
                   </button>
                 </div>
                 
