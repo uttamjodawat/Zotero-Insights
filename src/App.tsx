@@ -698,6 +698,17 @@ function ZoteroReader() {
     return matchesSearch;
   });
 
+  const getZoteroLink = (item: ZoteroItem) => {
+    const isGroup = auth?.libraryType === 'groups' || (auth as any)?.libraryType === 'group';
+    const libPrefix = isGroup ? `groups/${auth?.userID}` : 'library';
+    
+    if (item.meta.attachmentKey) {
+      const page = (item.meta.lastPage || 0) + 1;
+      return `zotero://open-pdf/${libPrefix}/items/${item.meta.attachmentKey}?page=${page}`;
+    }
+    return `zotero://select/${libPrefix}/items/${item.key}`;
+  };
+
   const handleSort = (key: string) => {
     let direction: 'asc' | 'desc' = 'asc';
     if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') {
@@ -1200,7 +1211,7 @@ function ZoteroReader() {
                                  <div className="flex items-center gap-3 truncate">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>
                                     <a 
-                                      href={item.meta.attachmentKey ? `zotero://open-pdf/library/items/${item.meta.attachmentKey}` : `zotero://open-pdf/library/items/${item.key}`}
+                                      href={getZoteroLink(item)}
                                       className="text-[11px] font-bold text-slate-700 truncate hover:text-blue-600"
                                     >
                                       {item.data.title}
@@ -1301,7 +1312,7 @@ function ZoteroReader() {
                                     </div>
                                     <div className="truncate flex-1">
                                        <a 
-                                          href={item.meta.attachmentKey ? `zotero://open-pdf/library/items/${item.meta.attachmentKey}` : `zotero://open-pdf/library/items/${item.key}`}
+                                          href={getZoteroLink(item)}
                                           className="text-[14px] font-black text-slate-900 truncate leading-tight block hover:text-blue-600 transition-colors group-hover:italic mb-1"
                                         >
                                           {item.data.title}
@@ -1442,7 +1453,6 @@ function ZoteroReader() {
                       <tbody className="divide-y divide-slate-50">
                         {sortedItems
                           .map((item, index) => {
-                            const zlink = item.meta.attachmentKey ? `zotero://open-pdf/library/items/${item.meta.attachmentKey}?page=${(item.meta.lastPage || 0) + 1}` : `zotero://open-pdf/library/items/${item.key}`;
                             return (
                               <motion.tr 
                                 key={item.key}
@@ -1458,7 +1468,7 @@ function ZoteroReader() {
                                      </div>
                                      <div className="min-w-0">
                                         <a 
-                                          href={zlink}
+                                          href={getZoteroLink(item)}
                                           className="text-[12px] font-black text-slate-900 leading-tight block hover:text-blue-600 transition-colors truncate"
                                         >
                                           {item.data.title}
