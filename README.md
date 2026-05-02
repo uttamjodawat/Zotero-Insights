@@ -13,10 +13,10 @@ A precision-engineered research analytics dashboard for Zotero users. Transform 
 ## 🚀 Key Features
 
 ### 1. Research Intelligence (Dashboard)
-- **Annotated Coverage**: Tracks what percentage of your library has been actively processed (items with 1+ annotations).
+- **Skimming Coverage**: Tracks what percentage of your library has been "skimmed" (items with 2+ annotations).
 - **Library Mastery**: Visualizes your progress in marking items as "Read," helping you bridge the gap between collection and consumption.
 - **Consistency Tracker**: Monitors your research frequency with a 7-day rolling activity streak.
-- **Collection Focus**: A specialized metric that compares the **Total Items** in a collection against the **Summation of Annotated Items**. This allows you to differentiate between "archival" collections and "active research" zones.
+- **Collection Focus**: A specialized metric that compares the **Total Items** in a collection against the **Summation of Skimmed Items (2+ annotations)**. This allows you to differentiate between "archival" collections and "active research" zones.
 
 ### 2. Knowledge Foundation
 - **Deep Analysis View**: Automatically surface your most heavily analyzed research materials based on annotation counts.

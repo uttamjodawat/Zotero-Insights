@@ -655,7 +655,7 @@ function ZoteroReader() {
       else if (isReading(item)) counts.reading++;
       else if (isQueued(item)) counts.queued++;
 
-      if ((item.meta.annotationCount || 0) > 0) counts.annotated++;
+      if ((item.meta.annotationCount || 0) >= 2) counts.annotated++;
 
       // Type data
       const iType = item.data.itemType;
@@ -665,7 +665,7 @@ function ZoteroReader() {
       (item.meta.collections || []).forEach(c => {
         if (!collectionStats[c]) collectionStats[c] = { total: 0, annotated: 0 };
         collectionStats[c].total++;
-        if ((item.meta.annotationCount || 0) > 0) {
+        if ((item.meta.annotationCount || 0) >= 2) {
           collectionStats[c].annotated++;
         }
       });
@@ -1305,12 +1305,12 @@ function ZoteroReader() {
                       <div className="space-y-8 flex-1">
                         <HealthBar label="Consistency" value={Math.round((metrics.currentStreak / 7) * 100)} color="bg-orange-500" />
                         <HealthBar label="Library Mastery" value={Math.round((metrics.read / Math.max(1, metrics.total)) * 100)} color="bg-blue-600" />
-                        <HealthBar label="Annotated Coverage" value={Math.round((metrics.annotated / Math.max(1, metrics.total)) * 100)} color="bg-emerald-500" />
+                        <HealthBar label="Skimming Coverage" value={Math.round((metrics.annotated / Math.max(1, metrics.total)) * 100)} color="bg-emerald-500" />
                       </div>
                                           <div className="mt-8 space-y-6 flex-1 flex flex-col min-h-0">
                         <div className="flex justify-between items-end">
                            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest italic">Collection Focus</h3>
-                           <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">% Annotated</span>
+                           <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">% Skimmed</span>
                         </div>
                         <div className="space-y-4 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar">
                           {metrics.collectionFocus.map((col, idx) => (
